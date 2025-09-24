@@ -1,0 +1,320 @@
+# Enhanced Chemical Reactor Optimization Project
+# CSTR + PFR Reactor System with Multiple Advanced Features
+
+import numpy as np
+from scipy.integrate import odeint
+from scipy.optimize import minimize, basinhopping
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+
+print(" Enhanced Chemical Reactor Optimization Project")
+print("=================================================")
+
+# ============================================================================
+# 1. ENHANCED PARAMETERS SYSTEM
+# ============================================================================
+class ReactorParameters:
+    """Advanced parameter system with validation"""
+    def __init__(self):
+        # Reaction parameters
+        self.reactions = {
+            'A→B': {'k': 0.5, 'order': 1, 'Ea': 75000, 'ΔH': -50000},
+            'A→C': {'k': 0.1, 'order': 1, 'Ea': 80000, 'ΔH': -40000}
+        }
+        
+        # Economic parameters
+        self.prices = {
+            'A': 2.0,    # $/mol
+            'B': 10.0,   # $/mol  
+            'C': 8.0     # $/mol (byproduct)
+        }
+        
+        # Reactor cost parameters
+        self.cost_factors = {'CSTR': 5.0, 'PFR': 3.0}
+        self.cost_exponent = 0.6
+        
+        # Operating conditions
+        self.T0 = 300  # K (initial temperature)
+        self.P = 101.3  # kPa
+        self.F_A0 = 10.0  # mol/min
+        
+    def get_rate_constant(self, reaction, T):
+        """Temperature-dependent rate constant using Arrhenius equation"""
+        k0 = self.reactions[reaction]['k']
+        Ea = self.reactions[reaction]['Ea']
+        R = 8.314  # J/mol·K
+        return k0 * np.exp(-Ea/(R*T))
+
+params = ReactorParameters()
+print("Enhanced parameter system loaded!")
+
+# ============================================================================
+# 2. MULTIPLE REACTION SUPPORT
+# ============================================================================
+def reaction_rates(C, T, params, reaction_type='parallel'):
+    """
+    Calculate reaction rates for different reaction networks
+    Supports: parallel reactions (A→B, A→C) and series reactions (A→B→C)
+    """
+    k1 = params.get_rate_constant('A→B', T)
+    k2 = params.get_rate_constant('A→C', T)
+    
+    C_A, C_B, C_C = C
+    
+    if reaction_type == 'parallel':
+        r_A = -k1 * C_A - k2 * C_A
+        r_B = k1 * C_A
+        r_C = k2 * C_A
+    elif reaction_type == 'series':
+        r_A = -k1 * C_A
+        r_B = k1 * C_A - k2 * C_B
+        r_C = k2 * C_B
+    
+    return [r_A, r_B, r_C]
+
+# ============================================================================
+# 3. NON-ISOTHERMAL REACTOR MODELS
+# ============================================================================
+def cstr_solver_advanced(V_cstr, F_A0, params, T_operating, reaction_type='parallel'):
+    """Advanced CSTR solver with temperature effects"""
+    tau = V_cstr / (F_A0 / params.prices['A'])  # Space time
+    k1 = params.get_rate_constant('A→B', T_operating)
+    k2 = params.get_rate_constant('A→C', T_operating)
+    
+    # Solve for concentrations
+    if reaction_type == 'parallel':
+        # For parallel reactions: C_A = C_A0 / (1 + (k1+k2)*tau)
+        C_A = 1.0 / (1 + (k1 + k2) * tau)
+        C_B = (k1 * tau) * C_A
+        C_C = (k2 * tau) * C_A
+    else:
+        # Simplified series reaction solution
+        C_A = 1.0 / (1 + k1 * tau)
+        C_B = (k1 * tau) * C_A / (1 + k2 * tau)
+        C_C = 1 - C_A - C_B
+    
+    conversions = {
+        'X_A': 1 - C_A,
+        'Y_B': C_B,
+        'Y_C': C_C
+    }
+    return conversions
+
+def pfr_solver_advanced(X_inlet, V_pfr, F_A0, params, T_operating):
+    """Advanced PFR solver with ODE integration"""
+    def pfr_odes(state, V):
+        X, T = state
+        C_A = 1 - X
+        k1 = params.get_rate_constant('A→B', T)
+        
+        # Reaction rate
+        r_A = -k1 * C_A
+        
+        # Energy balance (simplified)
+        ΔH = params.reactions['A→B']['ΔH']
+        Cp = 100  # J/mol·K (approx heat capacity)
+        dTdV = (-ΔH * r_A) / (F_A0 * Cp) if F_A0 > 0 else 0
+        
+        dXdV = -r_A / F_A0
+        return [dXdV, dTdV]
+    
+    V_span = np.linspace(0, V_pfr, 100)
+    initial_state = [X_inlet, T_operating]
+    solution = odeint(pfr_odes, initial_state, V_span)
+    
+    X_final, T_final = solution[-1]
+    return X_final, T_final
+
+# ============================================================================
+# 4. ENHANCED ECONOMIC MODEL
+# ============================================================================
+def calculate_profit_advanced(variables, params, reaction_type='parallel'):
+    """Advanced profit calculation with multiple products and utilities"""
+    V_cstr, V_pfr, T_cstr, T_pfr = variables
+    
+    # Avoid invalid values
+    if any(v < 0 for v in variables[:2]) or T_cstr < 250 or T_pfr < 250:
+        return 1e9
+    
+    # Reactor conversions
+    conv_cstr = cstr_solver_advanced(V_cstr, params.F_A0, params, T_cstr, reaction_type)
+    X_cstr = conv_cstr['X_A']
+    
+    X_final, T_final = pfr_solver_advanced(X_cstr, V_pfr, params.F_A0, params, T_pfr)
+    
+    # Product values
+    if reaction_type == 'parallel':
+        product_value = (conv_cstr['Y_B'] * params.prices['B'] + 
+                        conv_cstr['Y_C'] * params.prices['C']) * params.F_A0
+    else:
+        product_value = X_final * params.prices['B'] * params.F_A0
+    
+    # Costs
+    raw_material_cost = params.F_A0 * params.prices['A']
+    
+    # Reactor capital costs
+    capital_cost_cstr = params.cost_factors['CSTR'] * (V_cstr ** params.cost_exponent)
+    capital_cost_pfr = params.cost_factors['PFR'] * (V_pfr ** params.cost_exponent)
+    
+    # Utility costs (heating/cooling)
+    utility_cost = 0.01 * (abs(T_cstr - params.T0) + abs(T_pfr - T_cstr))
+    
+    # Total profit (per minute, amortized)
+    minutes_per_year = 365 * 24 * 60
+    total_minutes = 3 * minutes_per_year
+    
+    capital_cost_per_min = (capital_cost_cstr + capital_cost_pfr) / total_minutes
+    profit_per_min = product_value - raw_material_cost - capital_cost_per_min - utility_cost
+    
+    return -profit_per_min  # Negative for minimization
+
+# ============================================================================
+# 5. SENSITIVITY ANALYSIS
+# ============================================================================
+def sensitivity_analysis(params):
+    """Analyze how sensitive the optimum is to parameter changes"""
+    print("\n Running Sensitivity Analysis...")
+    
+    parameters_to_test = {
+        'Product B Price': ('prices', 'B', np.linspace(5, 15, 5)),
+        'Feed Flow Rate': ('F_A0', None, np.linspace(5, 15, 5)),
+        'Operating Temperature': ('T0', None, np.linspace(300, 400, 5))
+    }
+    
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    
+    for idx, (param_name, (attr, subattr, values)) in enumerate(parameters_to_test.items()):
+        profits = []
+        original_value = getattr(params, attr) if not subattr else getattr(params, attr)[subattr]
+        
+        for val in values:
+            if subattr:
+                getattr(params, attr)[subattr] = val
+            else:
+                setattr(params, attr, val)
+            
+            # Re-optimize for this parameter value
+            result = minimize(
+                lambda x: calculate_profit_advanced(x, params),
+                [15, 30, 350, 360],
+                bounds=[(1e-5, 100), (1e-5, 100), (300, 400), (300, 400)],
+                method='L-BFGS-B'
+            )
+            profits.append(-result.fun)
+        
+        # Restore original value
+        if subattr:
+            getattr(params, attr)[subattr] = original_value
+        else:
+            setattr(params, attr, original_value)
+        
+        axes[idx].plot(values, profits, 'o-', linewidth=2)
+        axes[idx].set_xlabel(param_name)
+        axes[idx].set_ylabel('Maximum Profit ($/min)')
+        axes[idx].grid(True, alpha=0.3)
+        axes[idx].set_title(f'Sensitivity to {param_name}')
+    
+    plt.tight_layout()
+    plt.show()
+
+# ============================================================================
+# 6. COMPARISON OF DIFFERENT CONFIGURATIONS
+# ============================================================================
+def compare_configurations(params):
+    """Compare different reactor configurations"""
+    print("\n Comparing Reactor Configurations...")
+    
+    configurations = {
+        'CSTR Only': [50, 1e-5, 350, 350],  # No PFR
+        'PFR Only': [1e-5, 50, 350, 350],    # No CSTR
+        'CSTR → PFR': [15, 30, 350, 360],    # Series configuration
+        'PFR → CSTR': [30, 15, 360, 350]     # Reverse series
+    }
+    
+    results = {}
+    
+    for config_name, initial_guess in configurations.items():
+        result = minimize(
+            lambda x: calculate_profit_advanced(x, params),
+            initial_guess,
+            bounds=[(1e-5, 100), (1e-5, 100), (300, 400), (300, 400)],
+            method='L-BFGS-B'
+        )
+        
+        if result.success:
+            results[config_name] = {
+                'profit': -result.fun,
+                'volumes': result.x[:2],
+                'temperatures': result.x[2:]
+            }
+    
+    # Display comparison
+    print("\nConfiguration Comparison:")
+    print("-" * 50)
+    for config, data in results.items():
+        print(f"{config:12} | Profit: ${data['profit']:6.2f}/min | "
+              f"CSTR: {data['volumes'][0]:5.1f}L, PFR: {data['volumes'][1]:5.1f}L")
+    
+    return results
+
+# ============================================================================
+# 7. MAIN OPTIMIZATION ROUTINE
+# ============================================================================
+def main_optimization(params):
+    """Main optimization routine with enhanced features"""
+    print("\n Running Main Optimization...")
+    
+    # Advanced optimization with temperature control
+    initial_guess = [15.0, 30.0, 350.0, 360.0]  # V_cstr, V_pfr, T_cstr, T_pfr
+    
+    bounds = [
+        (1e-5, 100),   # V_cstr bounds
+        (1e-5, 100),   # V_pfr bounds
+        (300, 400),    # T_cstr bounds
+        (300, 400)     # T_pfr bounds
+    ]
+    
+    # Use more robust optimization algorithm
+    result = basinhopping(
+        lambda x: calculate_profit_advanced(x, params),
+        initial_guess,
+        minimizer_kwargs={'bounds': bounds, 'method': 'L-BFGS-B'},
+        niter=10
+    )
+    
+    V_cstr_opt, V_pfr_opt, T_cstr_opt, T_pfr_opt = result.x
+    max_profit = -result.fun
+    
+    # Calculate final conversions
+    conv_cstr = cstr_solver_advanced(V_cstr_opt, params.F_A0, params, T_cstr_opt)
+    X_final, T_final = pfr_solver_advanced(conv_cstr['X_A'], V_pfr_opt, params.F_A0, params, T_pfr_opt)
+    
+    # Display results
+    print("\n" + "="*60)
+    print(" ENHANCED OPTIMIZATION RESULTS")
+    print("="*60)
+    print(f"Optimal CSTR Volume: {V_cstr_opt:.1f} L at {T_cstr_opt:.0f} K")
+    print(f"Optimal PFR Volume:  {V_pfr_opt:.1f} L at {T_pfr_opt:.0f} K")
+    print(f"Final Temperature:   {T_final:.0f} K")
+    print(f"Maximum Profit:     ${max_profit:.2f} per minute")
+    print(f"Final Conversion:    {X_final:.3f} ({X_final*100:.1f}%)")
+    print(f"\nOptimization successful: {result.success}")
+    
+    return result
+
+# ============================================================================
+# 8. RUN ALL ANALYSES
+# ============================================================================
+if __name__ == "__main__":
+    # Run main optimization
+    result = main_optimization(params)
+    
+    # Run sensitivity analysis
+    sensitivity_analysis(params)
+    
+    # Compare configurations
+    comparison_results = compare_configurations(params)
+    
+    print("\n Enhanced analysis complete!")
+    print(" Check the sensitivity analysis plots above!")
