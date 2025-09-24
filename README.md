@@ -1,5 +1,4 @@
-# Chemical_reactor_optimization
-# Chemical Reactor Optimization Project
+# Chemical Reactor Optimization 
 
 ## Project Overview
 This Python project demonstrates the optimization of a chemical reactor system consisting of a Continuous Stirred-Tank Reactor (CSTR) followed by a Plug Flow Reactor (PFR). The goal is to maximize profit by finding the optimal reactor volumes that balance capital costs against product revenue for a first-order chemical reaction A → B.
